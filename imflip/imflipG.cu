@@ -98,6 +98,20 @@ __global__ void Vflip(uch *ImgDst, uch *ImgSrc, ui Hpixels, ui Vpixels, ui total
     ImgDst[dstIdx + 2] = ImgSrc[srcIdx + 2];
 }
 
+__global__ void VflipM(ui *ImgDst, ui *ImgSrc, ui Vpixels, ui rowInts, ui totalInts)
+{
+    // 4 byts per thread
+    // row = idx / rowInts
+    // col = idx % rowInts
+    // dstRow = Vpixels - 1 - row
+    // dstCol = col
+    ui idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalInts) return; // Out of bounds check
+    ui dstIdx = (Vpixels - 1 - (idx / rowInts)) * rowInts + (idx % rowInts);
+
+    ImgDst[dstIdx] = ImgSrc[idx];
+}
+
 __global__ void Hflip(uch *ImgDst, uch *ImgSrc, ui Hpixels, ui Vpixels, ui totalPixels)
 {
     // row = idx / Hpixels
@@ -217,6 +231,15 @@ int main(int argc, char *argv[]) {
             GPUResult = GPUCopyImg;
             GPUDataTransfer = 2 * IMAGESIZE;
             break;
+        case 'M': {
+            ui rowInts = (IPH * 3) / 4; // Number of 4-byte integers per row
+            ui totalInts = rowInts * IPV; // Total number of 4-byte integers in the image
+            NumBlocks = (rowInts * IPV + ThrPerBlk - 1) / ThrPerBlk;
+            VflipM <<<NumBlocks, ThrPerBlk>>>((ui*)GPUCopyImg, (ui*)GPUImg, IPV, rowInts, totalInts);
+            GPUResult = GPUCopyImg;
+            GPUDataTransfer = 2 * IMAGESIZE;
+            break;
+        }
         default:
             fprintf(stderr, "Invalid flip type! Use 'H' for horizontal or 'V' for vertical.\n");
             return EXIT_FAILURE;

@@ -1,7 +1,7 @@
 # cudaLearn
 My own learning of cuda
 
- ./imflipG test.bmp testOut.bmp T
+ ./imflipG test.bmp testOut.bmp T 256
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
@@ -16,4 +16,21 @@ CPU->GPU Transfer =  2.05 ms ...   5 MB ...  2.90 GB/s
 Kernel Execution =  0.24 ms ...  23 MB ...100.43 GB/s
 GPU->CPU Transfer =  1.90 ms ...   5 MB ...  3.13 GB/s
 Total time elapsed =  2.05 ms
+--------------------...--------------------
+
+./imflipG test.bmp testOut.bmp M
+Number of GPU devices: 1
+GPU support MaxThrPerBlk: 1024.
+
+ Input File Name:          test.bmp (1920 x 1080) File Size: 6220800 bytes
+ Output File Name:       testOut.bmp (1920 x 1080) File Size: 6220800 bytes
+--...--
+NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks]
+--...--
+imflipG test.bmp testOut.bmp M 256 [6075 BLOCKS, 8 BLOCKS/ROW]
+--------------------...--------------------
+CPU->GPU Transfer =  1.87 ms ...   5 MB ...  3.18 GB/s
+Kernel Execution =  0.11 ms ...  11 MB ...107.29 GB/s
+GPU->CPU Transfer =  1.88 ms ...   5 MB ...  3.16 GB/s
+Total time elapsed =  1.87 ms
 --------------------...--------------------
