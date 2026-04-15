@@ -2,6 +2,7 @@
 My own learning of cuda
 
  ./imflipG test.bmp testOut.bmp T
+ 
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
