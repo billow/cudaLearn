@@ -1,7 +1,7 @@
 # cudaLearn
 My own learning of cuda
 
-./imflipG.exe test.bmp testOut.bmp V 512
+ ./imflipG test.bmp testOut.bmp T
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
@@ -10,15 +10,15 @@ GPU support MaxThrPerBlk: 1024.
 --...--
 NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks]
 --...--
-imflipG test.bmp testOut.bmp V 512 [35200 BLOCKS, 11 BLOCKS/ROW]
+imflipG test.bmp testOut.bmp T 256 [67200 BLOCKS, 21 BLOCKS/ROW]
 --------------------...--------------------
-CPU->GPU Transfer = 21.32 ms ...  47 MB ...  2.25 GB/s
-Kernel Execution =  0.63 ms ...  95 MB ...152.70 GB/s
-GPU->CPU Transfer = 13.71 ms ...  47 MB ...  3.49 GB/s
-Total time elapsed = 35.66 ms
+CPU->GPU Transfer = 20.13 ms ...  47 MB ...  2.38 GB/s
+Kernel Execution =  1.01 ms ... 191 MB ...190.24 GB/s
+GPU->CPU Transfer = 13.61 ms ...  47 MB ...  3.52 GB/s
+Total time elapsed = 34.75 ms
 --------------------...--------------------
 
-./imflipG.exe test.bmp testOut.bmp M 512
+ ./imflipG test.bmp testOut.bmp M
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
@@ -27,10 +27,10 @@ GPU support MaxThrPerBlk: 1024.
 --...--
 NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks]
 --...--
-imflipG test.bmp testOut.bmp M 512 [24507 BLOCKS, 11 BLOCKS/ROW]
+imflipG test.bmp testOut.bmp M 256 [49013 BLOCKS, 21 BLOCKS/ROW]
 --------------------...--------------------
-CPU->GPU Transfer = 20.58 ms ...  47 MB ...  2.33 GB/s
-Kernel Execution =  0.56 ms ...  95 MB ...170.31 GB/s
-GPU->CPU Transfer = 13.67 ms ...  47 MB ...  3.50 GB/s
-Total time elapsed = 34.81 ms
+CPU->GPU Transfer = 20.04 ms ...  47 MB ...  2.39 GB/s
+Kernel Execution =  0.71 ms ... 191 MB ...268.85 GB/s
+GPU->CPU Transfer = 13.68 ms ...  47 MB ...  3.50 GB/s
+Total time elapsed = 34.43 ms
 --------------------...--------------------

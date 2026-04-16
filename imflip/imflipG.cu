@@ -127,17 +127,27 @@ __global__ void Hflip(uch *ImgDst, uch *ImgSrc, ui Hpixels, ui Vpixels, ui total
     ImgDst[dstIdx + 2] = ImgSrc[srcIdx + 2];
 }
 
-__global__ void HflipM(ui *ImgDst, ui *ImgSrc, ui Hpixels, ui rowInts, ui totalInts)
+__global__ void HflipM(ui *ImgDst, ui *ImgSrc, ui rowInts, ui totalInts)
 {
     // 4 byts per thread
     // row = idx / rowInts
     // col = idx % rowInts
     // dstRow = row
-    // dstCol = Hpixels - 1 - col
-    ui idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx >= totalInts) return; // Out of bounds check
-    ui dstIdx = (idx / rowInts) * rowInts + (rowInts - 1 - (idx % rowInts));
-    ImgDst[dstIdx] = ImgSrc[idx];
+    // dstCol = rowInts - 1 - col
+    ui idx = (blockIdx.x * blockDim.x + threadIdx.x) * 3; // Each thread processes 3 integers (12 bytes)
+    if (idx >= totalInts / 3) return; // Out of bounds check
+    ui dstIdx = idx / rowInts * rowInts + (rowInts - 3 - (idx % rowInts)); // -2 to get the first int
+    ui A = ImgSrc[idx];
+    ui B = ImgSrc[idx + 1];
+    ui C = ImgSrc[idx + 2];
+    // A = [B1,R0,G0,B0] B=[G2,B2,R1,G1] C=[R3,G3,B3,R2]
+    // D = [B2,R3,G3,B3] E=[G1,B1,R2,G2] F=[R0,G0,B0,R1]
+    ui D = (C >> 8) | ((B << 8) & 0xFF000000);
+    ui E = (B << 24) | (B >> 24) | ((A >> 8) & 0x00FF0000) | ((C << 8) & 0x0000FF00);
+    ui F = ((A << 8) | 0xFFFF0000) | ((A >> 16) & 0x0000FF00) | ((B >> 8) & 0x000000FF);
+    ImgDst[dstIdx] = D;
+    ImgDst[dstIdx + 1] = E;
+    ImgDst[dstIdx + 2] = F;
 }
 
 __global__ void PixCopy(uch *ImgDst, uch *ImgSrc, ui TotalPixels)
@@ -247,9 +257,10 @@ int main(int argc, char *argv[]) {
             ui rowInts = (IPH * 3) / 4; // Number of 4-byte integers per row
             ui totalInts = rowInts * IPV; // Total number of 4-byte integers in the image
             NumBlocks = (rowInts * IPV + ThrPerBlk - 1) / ThrPerBlk;
+            HflipM <<<NumBlocks, ThrPerBlk>>>((ui*)GPUCopyImg, (ui*)GPUImg, rowInts, totalInts);
             VflipM <<<NumBlocks, ThrPerBlk>>>((ui*)GPUCopyImg, (ui*)GPUImg, IPV, rowInts, totalInts);
             GPUResult = GPUCopyImg;
-            GPUDataTransfer = 2 * IMAGESIZE;
+            GPUDataTransfer = 4 * IMAGESIZE;
             break;
         }
         default:
