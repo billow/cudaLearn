@@ -108,7 +108,6 @@ __global__ void VflipM(ui *ImgDst, ui *ImgSrc, ui Vpixels, ui rowInts, ui totalI
     ui idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx >= totalInts) return; // Out of bounds check
     ui dstIdx = (Vpixels - 1 - (idx / rowInts)) * rowInts + (idx % rowInts);
-
     ImgDst[dstIdx] = ImgSrc[idx];
 }
 
@@ -126,6 +125,19 @@ __global__ void Hflip(uch *ImgDst, uch *ImgSrc, ui Hpixels, ui Vpixels, ui total
     ImgDst[dstIdx] = ImgSrc[srcIdx];
     ImgDst[dstIdx + 1] = ImgSrc[srcIdx + 1];
     ImgDst[dstIdx + 2] = ImgSrc[srcIdx + 2];
+}
+
+__global__ void HflipM(ui *ImgDst, ui *ImgSrc, ui Hpixels, ui rowInts, ui totalInts)
+{
+    // 4 byts per thread
+    // row = idx / rowInts
+    // col = idx % rowInts
+    // dstRow = row
+    // dstCol = Hpixels - 1 - col
+    ui idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= totalInts) return; // Out of bounds check
+    ui dstIdx = (idx / rowInts) * rowInts + (rowInts - 1 - (idx % rowInts));
+    ImgDst[dstIdx] = ImgSrc[idx];
 }
 
 __global__ void PixCopy(uch *ImgDst, uch *ImgSrc, ui TotalPixels)
@@ -264,7 +276,7 @@ int main(int argc, char *argv[]) {
     cudaEventSynchronize(time2);
     cudaEventSynchronize(time3);
     cudaEventSynchronize(time4);
-    cudaEventElapsedTime(&totalTime, time1, time2);
+    cudaEventElapsedTime(&totalTime, time1, time4);
     cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
     cudaEventElapsedTime(&kernelExecutionTime, time2, time3);
     cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);

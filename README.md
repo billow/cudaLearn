@@ -1,36 +1,36 @@
 # cudaLearn
 My own learning of cuda
 
- ./imflipG test.bmp testOut.bmp T 256
+./imflipG.exe test.bmp testOut.bmp V 512
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
- Input File Name:          test.bmp (1920 x 1080) File Size: 6220800 bytes
- Output File Name:       testOut.bmp (1920 x 1080) File Size: 6220800 bytes
+ Input File Name:          test.bmp (5228 x 3200) File Size: 50188800 bytes
+ Output File Name:       testOut.bmp (5228 x 3200) File Size: 50188800 bytes
 --...--
 NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks]
 --...--
-imflipG test.bmp testOut.bmp T 256 [8640 BLOCKS, 8 BLOCKS/ROW]
+imflipG test.bmp testOut.bmp V 512 [35200 BLOCKS, 11 BLOCKS/ROW]
 --------------------...--------------------
-CPU->GPU Transfer =  2.05 ms ...   5 MB ...  2.90 GB/s
-Kernel Execution =  0.24 ms ...  23 MB ...100.43 GB/s
-GPU->CPU Transfer =  1.90 ms ...   5 MB ...  3.13 GB/s
-Total time elapsed =  2.05 ms
+CPU->GPU Transfer = 21.32 ms ...  47 MB ...  2.25 GB/s
+Kernel Execution =  0.63 ms ...  95 MB ...152.70 GB/s
+GPU->CPU Transfer = 13.71 ms ...  47 MB ...  3.49 GB/s
+Total time elapsed = 35.66 ms
 --------------------...--------------------
 
-./imflipG test.bmp testOut.bmp M
+./imflipG.exe test.bmp testOut.bmp M 512
 Number of GPU devices: 1
 GPU support MaxThrPerBlk: 1024.
 
- Input File Name:          test.bmp (1920 x 1080) File Size: 6220800 bytes
- Output File Name:       testOut.bmp (1920 x 1080) File Size: 6220800 bytes
+ Input File Name:          test.bmp (5228 x 3200) File Size: 50188800 bytes
+ Output File Name:       testOut.bmp (5228 x 3200) File Size: 50188800 bytes
 --...--
 NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks]
 --...--
-imflipG test.bmp testOut.bmp M 256 [6075 BLOCKS, 8 BLOCKS/ROW]
+imflipG test.bmp testOut.bmp M 512 [24507 BLOCKS, 11 BLOCKS/ROW]
 --------------------...--------------------
-CPU->GPU Transfer =  1.87 ms ...   5 MB ...  3.18 GB/s
-Kernel Execution =  0.11 ms ...  11 MB ...107.29 GB/s
-GPU->CPU Transfer =  1.88 ms ...   5 MB ...  3.16 GB/s
-Total time elapsed =  1.87 ms
+CPU->GPU Transfer = 20.58 ms ...  47 MB ...  2.33 GB/s
+Kernel Execution =  0.56 ms ...  95 MB ...170.31 GB/s
+GPU->CPU Transfer = 13.67 ms ...  47 MB ...  3.50 GB/s
+Total time elapsed = 34.81 ms
 --------------------...--------------------
