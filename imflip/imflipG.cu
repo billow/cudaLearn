@@ -18,6 +18,7 @@ uch *GPUImg, *GPUCopyImg, *GPUResult;
 #define IPV ip.Vpixels
 #define IMAGESIZE (IPHB * IPV)
 #define IMAGEPIXELS (IPH * IPV)
+#define MAXSTREAMSIZE 16
 
 struct ImgProp{
     ui Hpixels;
@@ -56,12 +57,14 @@ uch *ReadBMPlin(char *fn)
     memcpy(ip.HeaderInfo, &HeaderInfo, 54);
     printf("\n Input File Name: %17s (%u x %u) File Size: %u bytes\n", fn, ip.Hpixels, ip.Vpixels, IMAGESIZE);
 
-    Img = (uch *)malloc(IMAGESIZE);
-    if (!Img) {
+    void *tempPtr;
+    cudaError_t allocErr = cudaMallocHost((void **)(&tempPtr), IMAGESIZE);
+    if (allocErr != cudaSuccess) {
         fprintf(stderr, "Memory allocation failed for image data.\n");
         fclose(f);
-        return Img;
+        exit(EXIT_FAILURE);
     }
+    Img = (uch *)tempPtr;
 
     // Read the image data into Img
     fread(Img, sizeof(uch), IMAGESIZE, f);
@@ -135,11 +138,35 @@ __global__ void HflipM(ui *ImgDst, ui *ImgSrc, ui rowInts, ui totalInts)
     // dstRow = row
     // dstCol = rowInts - 1 - col
     ui idx = (blockIdx.x * blockDim.x + threadIdx.x) * 3; // Each thread processes 3 integers (12 bytes)
-    if (idx >= totalInts / 3) return; // Out of bounds check
+    if (idx >= totalInts) return; // Out of bounds check
     ui dstIdx = idx / rowInts * rowInts + (rowInts - 3 - (idx % rowInts)); // -2 to get the first int
     ui A = ImgSrc[idx];
     ui B = ImgSrc[idx + 1];
     ui C = ImgSrc[idx + 2];
+    // A = [B1,R0,G0,B0] B=[G2,B2,R1,G1] C=[R3,G3,B3,R2]
+    // D = [B2,R3,G3,B3] E=[G1,B1,R2,G2] F=[R0,G0,B0,R1]
+    ui D = (C >> 8) | ((B << 8) & 0xFF000000);
+    ui E = (B << 24) | (B >> 24) | ((A >> 8) & 0x00FF0000) | ((C << 8) & 0x0000FF00);
+    ui F = ((A << 8) | 0xFFFF0000) | ((A >> 16) & 0x0000FF00) | ((B >> 8) & 0x000000FF);
+    ImgDst[dstIdx] = D;
+    ImgDst[dstIdx + 1] = E;
+    ImgDst[dstIdx + 2] = F;
+}
+
+__global__ void HflipS(ui *ImgDst, ui *ImgSrc, ui startRow, ui rowInts, ui totalInts)
+{
+    // 4 byts per thread
+    // row = idx / rowInts
+    // col = idx % rowInts
+    // dstRow = row
+    // dstCol = rowInts - 3 - col
+    ui idx = (blockIdx.x * blockDim.x + threadIdx.x) * 3; // Each thread processes 3 integers (12 bytes)
+    if (idx >= totalInts) return; // Out of bounds check
+    ui srcIdx = idx + startRow * rowInts; // Adjust index for the starting row of this stream
+    ui dstIdx = idx / rowInts * rowInts + (rowInts - 3 - (idx % rowInts)) + startRow * rowInts; // -2 to get the first int
+    ui A = ImgSrc[srcIdx];
+    ui B = ImgSrc[srcIdx + 1];
+    ui C = ImgSrc[srcIdx + 2];
     // A = [B1,R0,G0,B0] B=[G2,B2,R1,G1] C=[R3,G3,B3,R2]
     // D = [B2,R3,G3,B3] E=[G1,B1,R2,G2] F=[R0,G0,B0,R1]
     ui D = (C >> 8) | ((B << 8) & 0xFF000000);
@@ -162,10 +189,11 @@ int main(int argc, char *argv[]) {
     cudaError_t cudaStatus, cudaStatus2;
     cudaEvent_t time1, time2, time3, time4;
     float totalTime, tfrCPUtoGPU, kernelExecutionTime, tfrGPUtoCPU;
-    ui BlkPerRow, ThrPerBlk=256, NumBlocks, GPUDataTransfer;
+    ui ThrPerBlk=256, NumBlocks, GPUDataTransfer, NumStreams=1;
     cudaDeviceProp GPUprop;
     ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;
     char SupportedBlocks[100];
+    cudaStream_t streams[MAXSTREAMSIZE];
 
     int NumGPUs = 0;
     cudaGetDeviceCount(&NumGPUs);
@@ -196,6 +224,11 @@ int main(int argc, char *argv[]) {
 
     strcpy(ProgName, "imflipG");
     switch (argc) {
+        case 6: NumStreams = atoi(argv[5]);
+            if (NumStreams > MAXSTREAMSIZE) {
+                fprintf(stderr, "Number of streams exceeds maximum supported (%d).\n", MAXSTREAMSIZE);
+                return EXIT_FAILURE;
+            }
         case 5: ThrPerBlk = atoi(argv[4]);
         case 4: Flip = toupper(argv[3][0]);
         case 3:
@@ -208,7 +241,13 @@ int main(int argc, char *argv[]) {
     }
 
     TheImg = ReadBMPlin(InputFileName);
-    CopyImg = (uch *)malloc(IMAGESIZE);
+    void *tempPtr;
+    cudaStatus = cudaMallocHost((void **)(&tempPtr), IMAGESIZE);
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "Memory allocation failed for image data.\n");
+        exit(EXIT_FAILURE);
+    }
+    CopyImg = (uch *)tempPtr;
 
     cudaEventCreate(&time1);
     cudaEventCreate(&time2);
@@ -225,14 +264,18 @@ int main(int argc, char *argv[]) {
     }
 
     // Copy the image data from host to device
-    cudaStatus = cudaMemcpy(GPUImg, TheImg, IMAGESIZE, cudaMemcpyHostToDevice);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed! Can't copy data to GPU.\n");
-        return EXIT_FAILURE;
-    }
-    cudaEventRecord(time2, 0);
-    BlkPerRow = (IPH + ThrPerBlk - 1) / ThrPerBlk;
-    NumBlocks = BlkPerRow * IPV;
+    if (Flip != 'S') {
+        cudaStatus = cudaMemcpy(GPUImg, TheImg, IMAGESIZE, cudaMemcpyHostToDevice);
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMemcpy failed! Can't copy data to GPU.\n");
+            return EXIT_FAILURE;
+        }
+        cudaEventRecord(time2, 0);
+    }   
+    
+    NumBlocks = (IPH * IPV + ThrPerBlk - 1) / ThrPerBlk;
+    ui rowInts = (IPH * 3) / 4; // Number of 4-byte integers per row
+    ui totalInts = rowInts * IPV; // Total number of 4-byte integers in the image
 
     switch (Flip) {
         case 'H': Hflip <<<NumBlocks, ThrPerBlk>>>(GPUCopyImg, GPUImg, IPH, IPV, IMAGEPIXELS);
@@ -253,14 +296,41 @@ int main(int argc, char *argv[]) {
             GPUResult = GPUCopyImg;
             GPUDataTransfer = 2 * IMAGESIZE;
             break;
-        case 'M': {
-            ui rowInts = (IPH * 3) / 4; // Number of 4-byte integers per row
-            ui totalInts = rowInts * IPV; // Total number of 4-byte integers in the image
-            NumBlocks = (rowInts * IPV + ThrPerBlk - 1) / ThrPerBlk;
+        case 'M':          
+            NumBlocks = (totalInts / 3 + ThrPerBlk - 1) / ThrPerBlk;
             HflipM <<<NumBlocks, ThrPerBlk>>>((ui*)GPUCopyImg, (ui*)GPUImg, rowInts, totalInts);
-            VflipM <<<NumBlocks, ThrPerBlk>>>((ui*)GPUCopyImg, (ui*)GPUImg, IPV, rowInts, totalInts);
             GPUResult = GPUCopyImg;
-            GPUDataTransfer = 4 * IMAGESIZE;
+            GPUDataTransfer = 2 * IMAGESIZE;
+            break;
+        case 'S': {
+            ui rowsPerStream = (IPV + NumStreams - 1) / NumStreams;
+            cudaStatus = cudaMemcpy(GPUImg, TheImg, IPHB * rowsPerStream, cudaMemcpyHostToDevice);
+            for (ui i = 0; i < NumStreams; i++) {
+                cudaStatus = cudaStreamCreate(&streams[i]);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaStreamCreate failed for stream %u.\n", i);
+                    return EXIT_FAILURE;
+                }
+                ui rowStart = i * rowsPerStream;
+                ui rowsInThisStream = min(rowsPerStream, IPV - rowStart);
+                if (i < NumStreams - 1) {
+                    ui rowsInNextStream = min(rowsPerStream, IPV - (i + 1) * rowsPerStream);
+                    cudaStatus = cudaMemcpyAsync(GPUImg + (i + 1) * rowsPerStream * IPHB, TheImg + (i + 1) * rowsPerStream * IPHB, rowsInNextStream * IPHB, cudaMemcpyHostToDevice, streams[i]);
+                    if (cudaStatus != cudaSuccess) {
+                        fprintf(stderr, "cudaMemcpyAsync failed for stream %u. cudaStatus: %d, rowsInNextStream: %u\n", i, cudaStatus, rowsInNextStream);
+                        return EXIT_FAILURE;
+                    }
+                }
+                if (i > 0)
+                {
+                    cudaStreamSynchronize(streams[i - 1]);
+                }
+                ui totalIntsThisStream = rowsInThisStream * rowInts;
+                printf("Stream %u: Processing rows %u to %u (total %u rows, %u ints)\n", i, rowStart, rowStart + rowsInThisStream - 1, rowsInThisStream, totalIntsThisStream);
+                NumBlocks = (totalIntsThisStream / 3 + ThrPerBlk - 1) / ThrPerBlk;       
+                HflipS<<<NumBlocks, ThrPerBlk, 0, streams[i]>>>((ui*)GPUCopyImg, (ui*)GPUImg, rowStart, rowInts, totalIntsThisStream);
+                cudaStatus = cudaMemcpyAsync(CopyImg + rowStart * IPHB, GPUCopyImg + rowStart * IPHB, rowsInThisStream * IPHB, cudaMemcpyDeviceToHost, streams[i]);
+            }
             break;
         }
         default:
@@ -276,21 +346,28 @@ int main(int argc, char *argv[]) {
     cudaEventRecord(time3, 0);
 
     // // Copy the result back to host
-    cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
-    if (cudaStatus != cudaSuccess) {
-        fprintf(stderr, "cudaMemcpy failed! Can't copy data from GPU.\n");
-        return EXIT_FAILURE;
+    if (Flip != 'S') {  
+        cudaStatus = cudaMemcpy(CopyImg, GPUResult, IMAGESIZE, cudaMemcpyDeviceToHost);
+        if (cudaStatus != cudaSuccess) {
+            fprintf(stderr, "cudaMemcpy failed! Can't copy data from GPU.\n");
+            return EXIT_FAILURE;
+        }
+        cudaEventRecord(time4, 0);
     }
-    cudaEventRecord(time4, 0);
 
     cudaEventSynchronize(time1);
-    cudaEventSynchronize(time2);
     cudaEventSynchronize(time3);
-    cudaEventSynchronize(time4);
-    cudaEventElapsedTime(&totalTime, time1, time4);
-    cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
-    cudaEventElapsedTime(&kernelExecutionTime, time2, time3);
-    cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
+    if (Flip != 'S') {
+        cudaEventSynchronize(time2);
+        cudaEventSynchronize(time4);
+        cudaEventElapsedTime(&totalTime, time1, time4);
+        cudaEventElapsedTime(&tfrCPUtoGPU, time1, time2);
+        cudaEventElapsedTime(&kernelExecutionTime, time2, time3);
+        cudaEventElapsedTime(&tfrGPUtoCPU, time3, time4);
+    } else {
+        cudaEventElapsedTime(&totalTime, time1, time3);
+        kernelExecutionTime = totalTime;
+    }
 
     
     // // Free GPU memory
@@ -304,13 +381,15 @@ int main(int argc, char *argv[]) {
     WriteBMPlin(CopyImg, OutputFileName);
     
     printf("--...--\n");
-    printf("%s ComputeCapab=%d.%d [supports max %s blocks]\n", GPUprop.name, GPUprop.major, GPUprop.minor, SupportedBlocks);
+    printf("%s ComputeCapab=%d.%d [supports max %s blocks], support overlap: %s\n", GPUprop.name, GPUprop.major, GPUprop.minor, SupportedBlocks, (GPUprop.asyncEngineCount > 0 ? "Yes" : "No"));
     printf("--...--\n");
-    printf("%s %s %s %c %u [%u BLOCKS, %u BLOCKS/ROW]\n", ProgName, InputFileName, OutputFileName, Flip, ThrPerBlk, NumBlocks, BlkPerRow);
+    printf("%s %s %s %c %u [%u BLOCKS]\n", ProgName, InputFileName, OutputFileName, Flip, ThrPerBlk, NumBlocks);
     printf("--------------------...--------------------\n");
-    printf("CPU->GPU Transfer = %5.2f ms ...%4d MB ...%6.2f GB/s\n", tfrCPUtoGPU, IMAGESIZE / (1024 * 1024), (float)IMAGESIZE / (tfrCPUtoGPU * 1024.0 * 1024.0));
-    printf("Kernel Execution = %5.2f ms ...%4d MB ...%6.2f GB/s\n", kernelExecutionTime, GPUDataTransfer / (1024 * 1024), (float)GPUDataTransfer / (kernelExecutionTime * 1024.0 * 1024.0));
-    printf("GPU->CPU Transfer = %5.2f ms ...%4d MB ...%6.2f GB/s\n", tfrGPUtoCPU, IMAGESIZE / (1024 * 1024), (float)IMAGESIZE / (tfrGPUtoCPU * 1024.0 * 1024.0));
+    if (Flip != 'S') {
+        printf("CPU->GPU Transfer = %5.2f ms ...%4d MB ...%6.2f GB/s\n", tfrCPUtoGPU, IMAGESIZE / (1024 * 1024), (float)IMAGESIZE / (tfrCPUtoGPU * 1024.0 * 1024.0));
+        printf("Kernel Execution = %5.2f ms ...%4d MB ...%6.2f GB/s\n", kernelExecutionTime, GPUDataTransfer / (1024 * 1024), (float)GPUDataTransfer / (kernelExecutionTime * 1024.0 * 1024.0));
+        printf("GPU->CPU Transfer = %5.2f ms ...%4d MB ...%6.2f GB/s\n", tfrGPUtoCPU, IMAGESIZE / (1024 * 1024), (float)IMAGESIZE / (tfrGPUtoCPU * 1024.0 * 1024.0));
+    }
     printf("Total time elapsed = %5.2f ms\n", totalTime);
     printf("--------------------...--------------------\n");
 
@@ -324,12 +403,17 @@ int main(int argc, char *argv[]) {
     cudaStatus = cudaDeviceReset();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceReset failed!\n");
-        free(TheImg);
-        free(CopyImg);
+        cudaFree(TheImg);
+        cudaFree(CopyImg);
         return EXIT_FAILURE;
     }
-    free(TheImg);
-    free(CopyImg);
+    cudaFree(TheImg);
+    cudaFree(CopyImg);
+    if (Flip == 'S') {
+        for (ui i = 0; i < NumStreams; i++) {
+            cudaStreamDestroy(streams[i]);
+        }
+    }
 
     return EXIT_SUCCESS;
 }
