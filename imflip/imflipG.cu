@@ -188,12 +188,13 @@ int main(int argc, char *argv[]) {
     char InputFileName[255], OutputFileName[255], ProgName[255];
     cudaError_t cudaStatus, cudaStatus2;
     cudaEvent_t time1, time2, time3, time4;
+    cudaEvent_t streamEvent[MAXSTREAMSIZE];
     float totalTime, tfrCPUtoGPU, kernelExecutionTime, tfrGPUtoCPU;
     ui ThrPerBlk=256, NumBlocks, GPUDataTransfer, NumStreams=1;
     cudaDeviceProp GPUprop;
     ul SupportedKBlocks, SupportedMBlocks, MaxThrPerBlk;
     char SupportedBlocks[100];
-    cudaStream_t streams[MAXSTREAMSIZE];
+    cudaStream_t streams[MAXSTREAMSIZE * 2]; // Each stream for Hflip and corresponding stream for memcpy back
 
     int NumGPUs = 0;
     cudaGetDeviceCount(&NumGPUs);
@@ -255,7 +256,10 @@ int main(int argc, char *argv[]) {
     cudaEventCreate(&time4);  
 
     // Allocate memory on the GPU
-    cudaEventRecord(time1, 0);
+    if (Flip != 'S') {
+        cudaEventRecord(time1, 0);
+    }
+    
     cudaStatus = cudaMalloc((void**)&GPUImg, IMAGESIZE);
     cudaStatus2 = cudaMalloc((void**)&GPUCopyImg, IMAGESIZE);
     if (cudaStatus != cudaSuccess || cudaStatus2 != cudaSuccess) {
@@ -274,7 +278,7 @@ int main(int argc, char *argv[]) {
     }   
     
     NumBlocks = (IPH * IPV + ThrPerBlk - 1) / ThrPerBlk;
-    ui rowInts = (IPH * 3) / 4; // Number of 4-byte integers per row
+    ui rowInts = IPHB / 4; // Number of 4-byte integers per row, including BMP padding
     ui totalInts = rowInts * IPV; // Total number of 4-byte integers in the image
 
     switch (Flip) {
@@ -304,32 +308,58 @@ int main(int argc, char *argv[]) {
             break;
         case 'S': {
             ui rowsPerStream = (IPV + NumStreams - 1) / NumStreams;
-            cudaStatus = cudaMemcpy(GPUImg, TheImg, IPHB * rowsPerStream, cudaMemcpyHostToDevice);
-            for (ui i = 0; i < NumStreams; i++) {
-                cudaStatus = cudaStreamCreate(&streams[i]);
+            ui totalStreams = NumStreams * 2;
+
+            for (ui i = 0; i < totalStreams; i += 2) {
+                cudaStatus = cudaStreamCreateWithFlags(&streams[i], cudaStreamNonBlocking);
                 if (cudaStatus != cudaSuccess) {
-                    fprintf(stderr, "cudaStreamCreate failed for stream %u.\n", i);
+                    fprintf(stderr, "cudaStreamCreateWithFlags failed for stream %u.\n", i);
                     return EXIT_FAILURE;
                 }
-                ui rowStart = i * rowsPerStream;
+                cudaStatus = cudaStreamCreateWithFlags(&streams[i + 1], cudaStreamNonBlocking);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaStreamCreateWithFlags failed for stream %u.\n", i + 1);
+                    return EXIT_FAILURE;
+                }
+            }
+
+            for (ui i = 0; i < NumStreams; i++) {
+                cudaStatus = cudaEventCreateWithFlags(&streamEvent[i], cudaEventDisableTiming);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaEventCreateWithFlags failed for stream event %u.\n", i);
+                    return EXIT_FAILURE;
+                }
+            }
+            cudaEventRecord(time1, 0);
+            for (ui streamIndex = 0; streamIndex < NumStreams; streamIndex++) {
+                ui evenStream = streamIndex * 2;
+                ui oddStream = evenStream + 1;
+                ui rowStart = streamIndex * rowsPerStream;
                 ui rowsInThisStream = min(rowsPerStream, IPV - rowStart);
-                if (i < NumStreams - 1) {
-                    ui rowsInNextStream = min(rowsPerStream, IPV - (i + 1) * rowsPerStream);
-                    cudaStatus = cudaMemcpyAsync(GPUImg + (i + 1) * rowsPerStream * IPHB, TheImg + (i + 1) * rowsPerStream * IPHB, rowsInNextStream * IPHB, cudaMemcpyHostToDevice, streams[i]);
-                    if (cudaStatus != cudaSuccess) {
-                        fprintf(stderr, "cudaMemcpyAsync failed for stream %u. cudaStatus: %d, rowsInNextStream: %u\n", i, cudaStatus, rowsInNextStream);
-                        return EXIT_FAILURE;
-                    }
+
+                cudaStatus = cudaMemcpyAsync(GPUImg + rowStart * IPHB, TheImg + rowStart * IPHB, rowsInThisStream * IPHB, cudaMemcpyHostToDevice, streams[evenStream]);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaMemcpyAsync failed for stream %u.\n", evenStream);
+                    return EXIT_FAILURE;
                 }
-                if (i > 0)
-                {
-                    cudaStreamSynchronize(streams[i - 1]);
-                }
+
                 ui totalIntsThisStream = rowsInThisStream * rowInts;
-                printf("Stream %u: Processing rows %u to %u (total %u rows, %u ints)\n", i, rowStart, rowStart + rowsInThisStream - 1, rowsInThisStream, totalIntsThisStream);
-                NumBlocks = (totalIntsThisStream / 3 + ThrPerBlk - 1) / ThrPerBlk;       
-                HflipS<<<NumBlocks, ThrPerBlk, 0, streams[i]>>>((ui*)GPUCopyImg, (ui*)GPUImg, rowStart, rowInts, totalIntsThisStream);
-                cudaStatus = cudaMemcpyAsync(CopyImg + rowStart * IPHB, GPUCopyImg + rowStart * IPHB, rowsInThisStream * IPHB, cudaMemcpyDeviceToHost, streams[i]);
+                printf("Stream %u: Processing rows %u to %u (total %u rows, %u ints)\n", streamIndex, rowStart, rowStart + rowsInThisStream - 1, rowsInThisStream, totalIntsThisStream);
+                NumBlocks = (totalIntsThisStream / 3 + ThrPerBlk - 1) / ThrPerBlk;
+                HflipS<<<NumBlocks, ThrPerBlk, 0, streams[evenStream]>>>((ui*)GPUCopyImg, (ui*)GPUImg, rowStart, rowInts, totalIntsThisStream);
+                cudaEventRecord(streamEvent[streamIndex], streams[evenStream]);
+
+                cudaStatus = cudaStreamWaitEvent(streams[oddStream], streamEvent[streamIndex], 0);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaStreamWaitEvent failed for stream %u.\n", oddStream);
+                    return EXIT_FAILURE;
+                }
+
+                cudaStatus = cudaMemcpyAsync(CopyImg + rowStart * IPHB, GPUCopyImg + rowStart * IPHB, rowsInThisStream * IPHB, cudaMemcpyDeviceToHost, streams[oddStream]);
+                if (cudaStatus != cudaSuccess) {
+                    fprintf(stderr, "cudaMemcpyAsync failed for stream %u.\n", oddStream);
+                    return EXIT_FAILURE;
+                }
             }
             break;
         }
@@ -368,14 +398,13 @@ int main(int argc, char *argv[]) {
         cudaEventElapsedTime(&totalTime, time1, time3);
         kernelExecutionTime = totalTime;
     }
-
     
     // // Free GPU memory
     cudaStatus = cudaDeviceSynchronize();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceSynchronize errorCode: %d.\n", cudaStatus);
-        free(TheImg);
-        free(CopyImg);
+        cudaFreeHost(TheImg);
+        cudaFreeHost(CopyImg);
         return EXIT_FAILURE;
     }
     WriteBMPlin(CopyImg, OutputFileName);
@@ -400,20 +429,32 @@ int main(int argc, char *argv[]) {
     cudaEventDestroy(time3);
     cudaEventDestroy(time4);
 
+    if (Flip == 'S') {
+        for (ui i = 0; i < NumStreams * 2; i++) {
+            cudaStatus = cudaStreamDestroy(streams[i]);
+            if (cudaStatus != cudaSuccess) {
+                fprintf(stderr, "cudaStreamDestroy failed for stream %u.\n", i);
+                return EXIT_FAILURE;
+            }
+        }
+        for (ui i = 0; i < NumStreams; i++) {
+            cudaStatus = cudaEventDestroy(streamEvent[i]);
+            if (cudaStatus != cudaSuccess) {
+                fprintf(stderr, "cudaEventDestroy failed for stream event %u.\n", i);
+                return EXIT_FAILURE;
+            }
+        }
+    }
+
     cudaStatus = cudaDeviceReset();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceReset failed!\n");
-        cudaFree(TheImg);
-        cudaFree(CopyImg);
+        cudaFreeHost(TheImg);
+        cudaFreeHost(CopyImg);
         return EXIT_FAILURE;
     }
-    cudaFree(TheImg);
-    cudaFree(CopyImg);
-    if (Flip == 'S') {
-        for (ui i = 0; i < NumStreams; i++) {
-            cudaStreamDestroy(streams[i]);
-        }
-    }
+    cudaFreeHost(TheImg);
+    cudaFreeHost(CopyImg);
 
     return EXIT_SUCCESS;
 }
