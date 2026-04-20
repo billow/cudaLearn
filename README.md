@@ -70,6 +70,7 @@ Stream 5: Processing rows 2000 to 2399 (total 400 rows, 1568400 ints)
 Stream 6: Processing rows 2400 to 2799 (total 400 rows, 1568400 ints)
 Stream 7: Processing rows 2800 to 3199 (total 400 rows, 1568400 ints)
  Output File Name:       testOut.bmp (5228 x 3200) File Size: 50188800 bytes
+ 
 --...--
 
 NVIDIA GeForce RTX 5060 ComputeCapab=12.0 [supports max 2048 M blocks], support
