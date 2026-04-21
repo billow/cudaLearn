@@ -57,7 +57,9 @@ Total time elapsed = 34.43 ms
 --------------------...--------------------
 
  ./imflipg test.bmp testOut.bmp S 256 8
+ 
 Number of GPU devices: 1
+
 GPU support MaxThrPerBlk: 1024.
 
  Input File Name:          test.bmp (5228 x 3200) File Size: 50188800 bytes
