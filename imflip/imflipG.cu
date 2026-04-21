@@ -20,6 +20,14 @@ uch *GPUImg, *GPUCopyImg, *GPUResult;
 #define IMAGEPIXELS (IPH * IPV)
 #define MAXSTREAMSIZE 16
 
+#define CHECK_CUDA_ERROR(call) { \
+    cudaError_t err = call; \
+    if (err != cudaSuccess) { \
+        printf("CUDA error in %s at line %d: %s\n", __FILE__, __LINE__, cudaGetErrorString(err)); \
+        exit(EXIT_FAILURE); \
+    } \
+}
+
 struct ImgProp{
     ui Hpixels;
     ui Vpixels;
@@ -52,6 +60,11 @@ uch *ReadBMPlin(char *fn)
     IPH = width;
     int height = *(int*)&HeaderInfo[22];
     IPV = height;
+    if (width <= 0 || height <= 0) {
+        fprintf(stderr, "Invalid BMP dimensions: width=%d, height=%d\n", width, height);
+        fclose(f);
+        exit(EXIT_FAILURE);
+    }
     int RowBytes = (width * 3 + 3) & (~3);
     IPHB = RowBytes;
     memcpy(ip.HeaderInfo, &HeaderInfo, 54);
@@ -403,8 +416,12 @@ int main(int argc, char *argv[]) {
     cudaStatus = cudaDeviceSynchronize();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceSynchronize errorCode: %d.\n", cudaStatus);
-        cudaFreeHost(TheImg);
-        cudaFreeHost(CopyImg);
+        if (TheImg) {
+            CHECK_CUDA_ERROR(cudaFreeHost(TheImg));
+        }
+        if (CopyImg) {
+            CHECK_CUDA_ERROR(cudaFreeHost(CopyImg));
+        }
         return EXIT_FAILURE;
     }
     WriteBMPlin(CopyImg, OutputFileName);
@@ -446,15 +463,18 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    if (TheImg) {
+        CHECK_CUDA_ERROR(cudaFreeHost(TheImg));
+    }
+    if (CopyImg) {
+        CHECK_CUDA_ERROR(cudaFreeHost(CopyImg));
+    }
+
     cudaStatus = cudaDeviceReset();
     if (cudaStatus != cudaSuccess) {
         fprintf(stderr, "cudaDeviceReset failed!\n");
-        cudaFreeHost(TheImg);
-        cudaFreeHost(CopyImg);
         return EXIT_FAILURE;
     }
-    cudaFreeHost(TheImg);
-    cudaFreeHost(CopyImg);
 
     return EXIT_SUCCESS;
 }
